@@ -10,3 +10,7 @@ Este projeto implementa um sistema de reconhecimento facial com detecção de ex
 - Bibliotecas:
   ```bash
   pip install torch torchvision opencv-python numpy sklearn mediapipe seaborn matplotlib tensorboard
+
+  # Instruções
+
+  É necessário deixar ao menos uma imagem de cada pessoa tanto no dataset de treino quanto no de teste, sendo o próprio dataset também uma pasta.

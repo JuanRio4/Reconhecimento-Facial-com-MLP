@@ -1,12 +1,198 @@
-Desafios enfrentados e aprendizados:
+# Descrição do Pipeline
 
-Alguns membros dos grupo tiveram dificuldade em conseguir uma quantidade razoável de fotos, e travamos o treino com 20 fotos para cada membro do grupo, mas esse problema foi superado com data argumentation, que generaliza as fotos.
-Além disso, o editor de código-fonte também foi um desafio, visto que o Mediapipe não era importado no Google Colab, único editor de alguns membros, forçando-os a instalar alternativas, como Anaconda e VS Code.
-Outrossim, a complexidade do código o fazia demorar no mínimo 20 minutos para rodar uma vez, complicando atualizações mais rápidas.
-Aprendemos a importância da CNN e embeddings pré-treinados para fazer um modelo de uso profissional, 
+## Visão Geral
+O pipeline é um sistema completo de reconhecimento facial que integra pré-processamento de imagens, treinamento de uma rede neural MLP (FaceMLP), validação cruzada, detecção de expressões faciais e inferência em tempo real ou em imagens estáticas. Ele utiliza bibliotecas como PyTorch, OpenCV, MediaPipe e Scikit-learn, incluindo alinhamento facial com MediaPipe, normalização de imagens, data augmentation e treinamento com técnicas como *label smoothing*, *early stopping* e validação cruzada estratificada.
+
+## Arquitetura da Rede Neural (FaceMLP)
+A classe `FaceMLP` é uma rede neural feedforward totalmente conectada, projetada para classificar imagens faciais em diferentes classes (pessoas) com base em características extraídas.
+
+### Entrada
+- Imagens em escala de cinza, redimensionadas para `IMG_SIZE x IMG_SIZE` (128x128 pixels), resultando em um vetor de entrada de tamanho 16384 (após *flattening*).
+- Pré-processamento:
+  - Equalização de histograma.
+  - Normalização Z-score.
+  - Transformações de aumento de dados (*data augmentation*).
+
+### Camadas da Rede
+A estrutura da rede é definida no método `__init__` da classe `FaceMLP` como:
+
+```python
+self.network = nn.Sequential(
+    nn.Linear(input_size, 1024),  # Camada 1: 16384 -> 1024
+    nn.LeakyReLU(0.1),           # Ativação com inclinação negativa
+    nn.BatchNorm1d(1024),        # Normalização em lote
+    nn.Dropout(0.4),             # Dropout para regularização
+    nn.Linear(1024, 512),        # Camada 2: 1024 -> 512
+    nn.LeakyReLU(0.1),
+    nn.BatchNorm1d(512),
+    nn.Dropout(0.4),
+    nn.Linear(512, 256),         # Camada 3: 512 -> 256
+    nn.LeakyReLU(0.1),
+    nn.BatchNorm1d(256),
+    nn.Dropout(0.3),
+    nn.Linear(256, num_classes)  # Camada 4: 256 -> num_classes
+)
+```
+
+- **Camadas Lineares**:
+  - Reduzem a dimensionalidade de 16384 para 1024, 512, 256 e, finalmente, para o número de classes (`num_classes`).
+  - Cada camada aplica uma transformação linear.
+- **Ativação LeakyReLU**:
+  - Usa inclinação negativa de 0.1 para introduzir não-linearidade, evitando o problema de "neurônio morto".
+- **Batch Normalization**:
+  - Aplica `BatchNorm1d` após cada camada linear para estabilizar e acelerar o treinamento.
+- **Dropout**:
+  - Probabilidades de 0.4 (primeiras camadas) e 0.3 (última camada oculta) para prevenir *overfitting*.
+
+### Saída
+- A camada final produz um vetor de *logits* com tamanho igual ao número de classes.
+- Durante a inferência, aplica-se *softmax* aos *logits* para obter probabilidades, selecionando a classe com maior probabilidade (limiar de confiança: `CONFIDENCE_THRESHOLD = 0.8`).
+
+### Inicialização de Pesos
+- Pesos das camadas lineares inicializados com *Xavier Uniform* para manter a variância dos gradientes estável.
+- Vieses inicializados com zeros.
+
+### Forward Pass
+- A imagem de entrada é achatada (`nn.Flatten`) para um vetor unidimensional e passa pela sequência de camadas definidas em `self.network`.
+
+### Observações
+A `FaceMLP` é otimizada para reconhecimento facial, combinando camadas lineares com técnicas modernas de regularização e pré-processamento via MediaPipe. É eficaz para datasets pequenos e cenários controlados, mas menos eficiente que CNNs em tarefas complexas. O código suporta validação cruzada, monitoramento via TensorBoard e inferência em tempo real.
+
+## Etapas do Pipeline
+
+### 1. Carregamento e Pré-processamento do Dataset
+- **Objetivo**: Preparar imagens faciais para treinamento e inferência.
+- **Componentes**:
+  - **Classe `FaceDataset`**:
+    - Lê imagens de um diretório (`root_dir`) organizado por pastas (cada pasta representa uma pessoa).
+    - Suporta extensões `.jpg`, `.jpeg` e `.png`.
+    - Carrega imagens em escala de cinza usando OpenCV.
+    - Aplica pré-processamento:
+      - Equalização de histograma (`cv2.equalizeHist`).
+      - Redimensionamento para 128x128 pixels.
+      - Normalização Z-score.
+    - Armazena caminhos das imagens e rótulos em listas, mapeando índices para nomes das classes em `label_map`.
+  - **Aumento de Dados (`data_transforms`)**:
+    - Aplica transformações aleatórias com `torchvision.transforms`:
+      - Inversão horizontal (`RandomHorizontalFlip`, p=0.5).
+      - Rotação (`RandomRotation`, até 45°).
+      - Transformações afins (`RandomAffine`).
+      - Ajustes de brilho e contraste (`ColorJitter`).
+      - Recorte e redimensionamento aleatório (`RandomResizedCrop`).
+      - Desfoque gaussiano (`GaussianBlur`).
+- **Saída**: Dataset PyTorch (`FaceDataset`) com imagens pré-processadas e rótulos, pronto para uso com `DataLoader`.
+
+### 2. Pré-processamento Avançado com Alinhamento Facial
+- **Objetivo**: Padronizar posição e orientação dos rostos.
+- **Componentes**:
+  - **Função `preprocess_face`**:
+    - Usa MediaPipe Face Detection para detectar rostos e obter *bounding boxes*.
+    - Usa MediaPipe Face Mesh para extrair *landmarks* (olhos, boca, sobrancelhas).
+    - Realiza alinhamento facial:
+      - Corrige rotação com base no ângulo entre os olhos.
+      - Ajusta a posição vertical dos olhos a 40% da altura da imagem.
+      - Extrai a região do rosto (*crop*) com base na *bounding box*.
+- **Saída**: Imagem do rosto alinhada (em escala de cores) e coordenadas da *bounding box*.
+
+### 3. Treinamento com Validação Cruzada
+- **Objetivo**: Treinar o modelo robustamente e avaliar desempenho em subconjuntos do dataset.
+- **Componentes**:
+  - **Função `cross_validation`**:
+    - Usa K-Fold Cross-Validation (`K_FOLDS = 2`).
+    - Para cada *fold*:
+      - Cria `DataLoader` para treino e validação (`BATCH_SIZE = 16`).
+      - Inicializa um novo modelo `FaceMLP`.
+      - Treina com `train_model`.
+      - Avalia com `evaluate_model`.
+      - Gera e salva matrizes de confusão.
+    - Calcula acurácia média, desvio padrão e acurácia geral.
+  - **Função `train_model`**:
+    - Treina por até `EPOCHS = 100`.
+    - Usa:
+      - Função de perda: `LabelSmoothingCrossEntropy` (smoothing=0.1).
+      - Otimizador: `AdamW` (`LEARNING_RATE = 0.001`, `weight_decay=1e-4`).
+      - Scheduler: `CosineAnnealingLR`.
+      - Clipping de gradientes: `GRAD_CLIP = 1.0`.
+      - *Early Stopping*: Interrompe após `PATIENCE = 5` épocas sem melhoria.
+    - Salva melhores pesos em `/home/juan/Imagens/Matrizes/best_face_mlp_weights.pth`.
+    - Registra métricas no TensorBoard.
+  - **Função `evaluate_model`**:
+    - Calcula acurácia e perda no conjunto de validação.
+    - Retorna predições e rótulos verdadeiros para análise.
+- **Saída**: Modelo treinado, métricas de desempenho e matrizes de confusão.
+
+### 4. Detecção de Expressão Facial
+- **Objetivo**: Classificar expressões faciais em "Feliz", "Neutro" ou "Bravo".
+- **Componentes**:
+  - **Função `detect_expression`**:
+    - Usa MediaPipe Face Mesh para extrair *landmarks*.
+    - Calcula métricas:
+      - Razão altura/largura da boca (`mouth_ratio`).
+      - Ângulos das sobrancelhas (`eyebrow_angle`).
+      - Distância entre sobrancelhas (`eyebrow_distance`).
+      - Abertura média dos olhos (`avg_eye_opening`).
+    - Classifica com regras heurísticas:
+      - **Feliz**: `mouth_ratio > 0.5` ou aumento abrupto (`HAPPINESS_SPIKE_THRESHOLD = 0.6`).
+      - **Bravo**: Sobrancelhas inclinadas (`angle < -3`), próximas (`eyebrow_distance < 0.07`), boca fechada (`mouth_ratio < 0.35`), olhos estreitos (`avg_eye_opening < 0.03`).
+      - **Neutro**: Caso contrário.
+- **Saída**: Rótulo da expressão facial.
+
+### 5. Inferência
+- **Objetivo**: Reconhecer rostos e expressões em imagens estáticas ou em tempo real.
+- **Componentes**:
+  - **Função `predict_face`**:
+    - Realiza pré-processamento com `preprocess_face`.
+    - Converte imagem para escala de cinza, equaliza histograma, redimensiona e normaliza.
+    - Alimenta a imagem ao modelo `FaceMLP` para obter *logits*.
+    - Aplica *softmax* e verifica confiança (`CONFIDENCE_THRESHOLD = 0.8`).
+    - Retorna rótulo, *bounding box* e confiança.
+  - **Função `process_image_file`**:
+    - Processa imagem estática.
+    - Chama `predict_face` e `detect_expression`.
+    - Desenha *bounding box* e texto (rótulo, confiança, expressão).
+    - Salva e exibe imagem anotada.
+  - **Função `real_time_recognition`**:
+    - Captura vídeo da webcam.
+    - Processa quadros em tempo real com `predict_face` e `detect_expression`.
+    - Exibe vídeo anotado até pressionar 'q'.
+- **Saída**:
+  - Imagens estáticas: Imagem anotada salva/exibida.
+  - Tempo real: Vídeo com anotações.
+
+### 6. Interface Principal
+- **Objetivo**: Fornecer interface interativa.
+- **Componentes**:
+  - **Função `main`**:
+    - Inicializa MediaPipe Face Detection e Face Mesh.
+    - Carrega datasets de treino e teste.
+    - Executa validação cruzada.
+    - Carrega melhores pesos e inicializa `FaceMLP`.
+    - Salva pesos finais em `/home/juan/Imagens/Matrizes/face_mlp_final_weights.pth`.
+    - Oferece menu interativo:
+      - Reconhecer rosto em imagem estática.
+      - Reconhecer rosto em tempo real.
+      - Sair.
+- **Saída**: Sistema interativo para reconhecimento facial.
+
+## Fluxo Resumido
+1. **Carregamento do Dataset**: Lê imagens, aplica pré-processamento e aumento de dados.
+2. **Pré-processamento Avançado**: Detecta e alinha rostos com MediaPipe.
+3. **Treinamento**: Treina MLP com validação cruzada, *label smoothing* e *early stopping*.
+4. **Detecção de Expressão**: Classifica expressões com *landmarks*.
+5. **Inferência**: Reconhece rostos em imagens ou tempo real.
+6. **Interface**: Menu interativo.
+
+## Desafios e Aprendizados
+- **Desafios**:
+  - Quantidade limitada de fotos (20 por membro), superada com *data augmentation*.
+  - Problemas com importação do MediaPipe no Google Colab, exigindo alternativas (Anaconda, VS Code).
+  - Tempo de execução longo (mínimo 20 minutos por execução).
+- **Aprendizados**:
+  - Importância de CNNs e *embeddings* pré-treinados para modelos profissionais.
 
 
-Resultados:
+
+# Resultados:
 
 Matriz de confusão: https://drive.google.com/file/d/1N4iwKU2_7pHl6_A640KwUk_zKpTyqJFm/view?usp=sharing
 

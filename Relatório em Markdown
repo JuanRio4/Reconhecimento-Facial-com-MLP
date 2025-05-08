@@ -1,0 +1,14 @@
+Desafios enfrentados e aprendizados:
+
+Alguns membros dos grupo tiveram dificuldade em conseguir uma quantidade razoável de fotos, e travamos o treino com 20 fotos para cada membro do grupo, mas esse problema foi superado com data argumentation, que generaliza as fotos.
+Além disso, o editor de código-fonte também foi um desafio, visto que o Mediapipe não era importado no Google Colab, único editor de alguns membros, forçando-os a instalar alternativas, como Anaconda e VS Code.
+Outrossim, a complexidade do código o fazia demorar no mínimo 20 minutos para rodar uma vez, complicando atualizações mais rápidas.
+Aprendemos a importância da CNN e embeddings pré-treinados para fazer um modelo de uso profissional, 
+
+
+Resultados:
+
+Matriz de confusão: https://drive.google.com/file/d/1N4iwKU2_7pHl6_A640KwUk_zKpTyqJFm/view?usp=sharing
+
+Acurácia total: 34,52% / link: https://drive.google.com/file/d/1OU08vyVxdc2L0ysev_hPuxrFju9UQAem/view?usp=sharing
+

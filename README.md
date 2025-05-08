@@ -9,7 +9,7 @@ Este projeto implementa um sistema de reconhecimento facial com detecção de ex
 - Python 3.8+
 - Bibliotecas:
   ```bash
-  pip install torch torchvision opencv-python numpy sklearn mediapipe seaborn matplotlib tensorboard
+  pip install torch torchvision opencv-python numpy sklearn mediapipe seaborn matplotlib tensorboard```
 
   # Instruções
 
